@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Cart Replacement Navigation</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+html, body {
+    margin:0;
+    height:100%;
+    font-family: Arial;
+}
+
+#map {
+    position:absolute;
+    top:0;
+    left:0;
+    right:0;
+    bottom:0;
+    z-index:1;
+}
+
+#panel {
+    position:absolute;
+    top:10px;
+    left:10px;
+    width:380px;
+    background:white;
+    padding:12px;
+    border-radius:12px;
+    z-index:999;
+    box-shadow:0 3px 12px rgba(0,0,0,0.2);
+    max-height:90%;
+    overflow:auto;
+}
+
+button, input {
+    width:100%;
+    padding:7px;
+    margin-top:4px;
+    box-sizing:border-box;
+    font-size:14px;
+}
+
+#status {
+    margin-top:10px;
+    padding:10px;
+    background:#eee;
+    border-radius:8px;
+    font-weight:bold;
+}
+
+#list {
+    padding-left:20px;
+}
+
+#suggestBox {
+    background:white;
+    border:1px solid #ccc;
+    max-height:200px;
+    overflow:auto;
+    position:absolute;
+    width:360px;
+    z-index:9999;
+}
+</style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div id="panel">
+
+<h3>🛒 Cart Replacement Navigation</h3>
+
+<input type="text" id="addressInput" placeholder="Enter any address..." autocomplete="off"/>
+<div id="suggestBox"></div>
+
+<button onclick="addStop()">Add Stop</button>
+<button onclick="startNavigation()" id="startBtn" disabled>Start Navigation</button>
+<button onclick="markDone()">Mark Stop Done</button>
+<button onclick="goToMyLocation()">📍 My Location</button>
+<button onclick="clearAll()">Clear</button>
+
+<div id="status">Initializing GPS...</div>
+
+<ul id="list"></ul>
+
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+
+// ================= MAP =================
+let map = L.map('map').setView([51.0447,-114.0719],11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'&copy; OpenStreetMap'
+}).addTo(map);
+
+// ================= DATA =================
+let stops = [];
+let route = [];
+let currentIndex = 0;
+let completedStops = [];
+
+// ================= GPS =================
+let currentPos = null;
+let gpsReady = false;
+let lastGpsUpdate = 0;
+
+// ================= VISUAL =================
+let routeLine = null;
+let markers = [];
+let driverMarker = null;
+
+// ================= STATUS =================
+function setStatus(msg){
+    document.getElementById("status").innerHTML = msg;
+}
+
+// ================= GPS =================
+function initGPS(){
+
+    if(!navigator.geolocation){
+        setStatus("❌ GPS not supported");
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition((pos)=>{
+
+        currentPos = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude
+        };
+
+        gpsReady = true;
+        setStatus("📍 GPS LOCKED");
+        document.getElementById("startBtn").disabled = false;
+
+        updateDriverMarker();
+
+    });
+
+    navigator.geolocation.watchPosition((pos)=>{
+
+        if(pos.coords.accuracy > 80) return;
+
+        let now = Date.now();
+        if(now - lastGpsUpdate < 1500) return;
+
+        lastGpsUpdate = now;
+
+        currentPos = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude
+        };
+
+        updateDriverMarker();
+
+    });
+}
+
+// ================= DRIVER =================
+function updateDriverMarker(){
+
+    if(!currentPos) return;
+
+    if(driverMarker){
+        driverMarker.setLatLng([currentPos.lat, currentPos.lng]);
+    } else {
+        driverMarker = L.circleMarker(
+            [currentPos.lat, currentPos.lng],
+            {
+                radius:10,
+                color:"blue",
+                fillColor:"blue",
+                fillOpacity:0.8
+            }
+        ).addTo(map).bindPopup("Your Location");
+    }
+}
+
+//
+// ================= FIXED MY LOCATION (PRODUCTION SAFE) =================
+//
+function goToMyLocation(){
+
+    setStatus("📍 Locating...");
+
+    navigator.geolocation.getCurrentPosition(
+        (pos) => {
+
+            currentPos = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude
+            };
+
+            gpsReady = true;
+
+            map.setView([currentPos.lat, currentPos.lng], 17);
+
+            updateDriverMarker();
+
+            if(driverMarker){
+                driverMarker.openPopup();
+            }
+
+            setStatus("📍 Centered on your location");
+
+        },
+        (err) => {
+            setStatus("❌ GPS error: " + err.message);
+        },
+        {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        }
+    );
+}
+
+// ================= AUTOCOMPLETE =================
+let suggestTimer = null;
+
+document.getElementById("addressInput").addEventListener("input", function(e){
+
+    let value = e.target.value.trim();
+
+    if(value.length < 3){
+        document.getElementById("suggestBox").innerHTML = "";
+        return;
+    }
+
+    clearTimeout(suggestTimer);
+
+    suggestTimer = setTimeout(async () => {
+
+        let url =
+        "https://nominatim.openstreetmap.org/search?format=json&limit=5&q=" +
+        encodeURIComponent(value);
+
+        try {
+
+            let res = await fetch(url);
+            let data = await res.json();
+
+            let box = document.getElementById("suggestBox");
+            box.innerHTML = "";
+
+            data.forEach(item => {
+
+                let div = document.createElement("div");
+
+                div.innerHTML = item.display_name;
+                div.style.padding = "6px";
+                div.style.cursor = "pointer";
+                div.style.borderBottom = "1px solid #eee";
+
+                div.onclick = function(){
+                    document.getElementById("addressInput").value =
+                        item.display_name;
+                    box.innerHTML = "";
+                };
+
+                box.appendChild(div);
+            });
+
+        } catch(e){
+            console.log(e);
+        }
+
+    }, 400);
+});
+
+// ================= GEOCODE =================
+async function geocodeAddress(query){
+
+    try {
+
+        let url =
+        "https://nominatim.openstreetmap.org/search?format=json&q=" +
+        encodeURIComponent(query);
+
+        let res = await fetch(url);
+        let data = await res.json();
+
+        if(data && data.length > 0){
+            return {
+                address: data[0].display_name,
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
+            };
+        }
+
+    } catch(e){
+        console.log(e);
+    }
+
+    return null;
+}
+
+// ================= ADD STOP =================
+async function addStop(){
+
+    let input =
+    document.getElementById("addressInput").value.trim();
+
+    if(!input){
+        setStatus("Enter address");
+        return;
+    }
+
+    setStatus("🔎 Searching...");
+
+    let found = await geocodeAddress(input);
+
+    if(!found){
+        setStatus("Address not found");
+        return;
+    }
+
+    stops.push(found);
+
+    document.getElementById("list").innerHTML +=
+    `<li>${found.address}</li>`;
+
+    document.getElementById("addressInput").value = "";
+    document.getElementById("suggestBox").innerHTML = "";
+
+    setStatus("Added ✔");
+}
+
+// ================= ROAD DISTANCE =================
+async function getRoadDistance(from, to){
+
+    try {
+
+        let url =
+        "https://router.project-osrm.org/route/v1/driving/" +
+        `${from.lng},${from.lat};${to.lon},${to.lat}` +
+        "?overview=false";
+
+        let res = await fetch(url);
+        let data = await res.json();
+
+        if(data.routes && data.routes.length > 0){
+            return data.routes[0].distance;
+        }
+
+    } catch(e){
+        console.log(e);
+    }
+
+    return Infinity;
+}
+
+// ================= ROUTE =================
+async function buildNearestRoute(){
+
+    let remaining = [...stops];
+    let ordered = [];
+
+    let current = {
+        lat: currentPos.lat,
+        lng: currentPos.lng
+    };
+
+    while(remaining.length > 0){
+
+        let bestIndex = 0;
+        let bestDist = Infinity;
+
+        for(let i=0;i<remaining.length;i++){
+
+            let d = await getRoadDistance(current, remaining[i]);
+
+            if(d < bestDist){
+                bestDist = d;
+                bestIndex = i;
+            }
+        }
+
+        let next = remaining.splice(bestIndex,1)[0];
+        ordered.push(next);
+
+        current = { lat: next.lat, lng: next.lon };
+    }
+
+    route = ordered;
+}
+
+// ================= ROAD PATH =================
+async function getRoadPath(){
+
+    if(route.length === 0) return [];
+
+    let coords = [];
+    coords.push(`${currentPos.lng},${currentPos.lat}`);
+
+    route.forEach(s => coords.push(`${s.lon},${s.lat}`));
+
+    let url =
+    "https://router.project-osrm.org/route/v1/driving/" +
+    coords.join(";") +
+    "?overview=full&geometries=geojson";
+
+    try {
+
+        let res = await fetch(url);
+        let data = await res.json();
+
+        if(data.routes && data.routes.length > 0){
+            return data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+        }
+
+    } catch(e){
+        console.log(e);
+    }
+
+    return [];
+}
+
+// ================= VISUAL =================
+async function updateRouteVisual(){
+
+    if(routeLine) map.removeLayer(routeLine);
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    let latlngs = [];
+
+    route.forEach((stop, index)=>{
+
+        let latlng = [stop.lat, stop.lon];
+        latlngs.push(latlng);
+
+        let color = "#1e88e5";
+        if(index === currentIndex) color = "green";
+        if(completedStops.includes(stop)) color = "grey";
+
+        let icon = L.divIcon({
+            html:`<div style="
+                background:${color};
+                color:white;
+                width:28px;
+                height:28px;
+                border-radius:50%;
+                text-align:center;
+                line-height:28px;
+                font-weight:bold;
+                border:2px solid white;
+            ">${index+1}</div>`
+        });
+
+        let m = L.marker(latlng,{icon})
+        .addTo(map)
+        .bindPopup(stop.address);
+
+        markers.push(m);
+    });
+
+    let roadPath = await getRoadPath();
+
+    if(roadPath.length > 0){
+        routeLine = L.polyline(roadPath,{color:"blue",weight:5}).addTo(map);
+        map.fitBounds(routeLine.getBounds());
+    } else {
+        routeLine = L.polyline(latlngs,{color:"blue",weight:4}).addTo(map);
+        map.fitBounds(routeLine.getBounds());
+    }
+
+    setStatus(`🚛 Progress: ${completedStops.length}/${route.length}`);
+}
+
+// ================= START =================
+async function startNavigation(){
+
+    if(!gpsReady) return setStatus("GPS not ready");
+    if(!stops.length) return setStatus("No stops");
+
+    await buildNearestRoute();
+
+    currentIndex = 0;
+    completedStops = [];
+
+    await updateRouteVisual();
+
+    openNextStop();
+}
+
+// ================= NAV =================
+function openNextStop(){
+
+    if(currentIndex >= route.length){
+        setStatus("✔ Completed");
+        return;
+    }
+
+    let stop = route[currentIndex];
+
+    setStatus("🚛 NEXT: " + stop.address);
+
+    window.open(
+        "https://www.google.com/maps/dir/?api=1" +
+        "&destination=" + stop.lat + "," + stop.lon +
+        "&travelmode=driving",
+        "_blank"
+    );
+}
+
+// ================= DONE =================
+async function markDone(){
+
+    completedStops.push(route[currentIndex]);
+    currentIndex++;
+
+    await updateRouteVisual();
+
+    if(currentIndex < route.length){
+        openNextStop();
+    } else {
+        setStatus("✔ Finished");
+    }
+}
+
+// ================= CLEAR =================
+function clearAll(){
+
+    stops = [];
+    route = [];
+    currentIndex = 0;
+    completedStops = [];
+
+    document.getElementById("list").innerHTML = "";
+
+    if(routeLine) map.removeLayer(routeLine);
+    markers.forEach(m => map.removeLayer(m));
+
+    markers = [];
+
+    setStatus("Cleared ✔");
+}
+
+// ================= INIT =================
+initGPS();
+
+</script>
+
+</body>
+</html>
