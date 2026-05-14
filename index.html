@@ -187,9 +187,7 @@ function updateDriverMarker(){
     }
 }
 
-//
-// ================= FIXED MY LOCATION (PRODUCTION SAFE) =================
-//
+// ================= FIXED MY LOCATION =================
 function goToMyLocation(){
 
     setStatus("📍 Locating...");
@@ -507,12 +505,14 @@ function openNextStop(){
 
     setStatus("🚛 NEXT: " + stop.address);
 
-    window.open(
-        "https://www.google.com/maps/dir/?api=1" +
-        "&destination=" + stop.lat + "," + stop.lon +
-        "&travelmode=driving",
-        "_blank"
-    );
+    // ================= OS MAND NAVIGATION =================
+    let url =
+        "https://osmand.net/go?" +
+        "lat=" + stop.lat +
+        "&lon=" + stop.lon +
+        "&navigate=yes";
+
+    window.open(url, "_blank");
 }
 
 // ================= DONE =================
