@@ -187,7 +187,7 @@ function updateDriverMarker(){
     }
 }
 
-// ================= FIXED MY LOCATION =================
+// ================= MY LOCATION =================
 function goToMyLocation(){
 
     setStatus("📍 Locating...");
@@ -505,14 +505,31 @@ function openNextStop(){
 
     setStatus("🚛 NEXT: " + stop.address);
 
-    // ================= OS MAND NAVIGATION =================
-    let url =
-        "https://osmand.net/go?" +
-        "lat=" + stop.lat +
-        "&lon=" + stop.lon +
-        "&navigate=yes";
+    let isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-    window.open(url, "_blank");
+    // ================= iPHONE =================
+    if(isIOS){
+
+        let iosUrl =
+            "osmandmaps://search?" +
+            "lat=" + stop.lat +
+            "&lon=" + stop.lon +
+            "&query=" + encodeURIComponent(stop.address);
+
+        window.location.href = iosUrl;
+    }
+
+    // ================= ANDROID + OTHERS =================
+    else {
+
+        let androidUrl =
+            "https://osmand.net/go?" +
+            "lat=" + stop.lat +
+            "&lon=" + stop.lon +
+            "&navigate=yes";
+
+        window.open(androidUrl, "_blank");
+    }
 }
 
 // ================= DONE =================
